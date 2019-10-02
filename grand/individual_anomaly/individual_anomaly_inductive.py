@@ -8,30 +8,31 @@ __license__ = "MIT"
 __email__ = "mohamed-rafik.bouguelia@hh.se"
 
 from grand.conformal import get_strangeness
-from grand.utils import DeviationContext, append_to_df
-from grand import utils
-import matplotlib.pylab as plt, pandas as pd, numpy as np
-from pandas.plotting import register_matplotlib_converters
+from grand.utils import DeviationContext
+from grand import utils, plotting
+import matplotlib.pylab as plt
+import pandas as pd
+import numpy as np
 
 
 class IndividualAnomalyInductive:
-    '''Deviation detection for a single/individual unit
-    
+    """Deviation detection for a single/individual unit
+
     Parameters:
     ----------
     w_martingale : int
-        Window used to compute the deviation level based on the last w_martingale samples. 
-                
+        Window used to compute the deviation level based on the last w_martingale samples.
+
     non_conformity : string
         Strangeness (or non-conformity) measure used to compute the deviation level.
         It must be either "median" or "knn"
-                
+
     k : int
         Parameter used for k-nearest neighbours, when non_conformity is set to "knn"
-        
+
     dev_threshold : float
         Threshold in [0,1] on the deviation level
-    '''
+    """
     
     def __init__(self, w_martingale=15, non_conformity="median", k=20, dev_threshold=0.6, columns=None):
         utils.validate_individual_deviation_params(w_martingale, non_conformity, k, dev_threshold)
@@ -49,7 +50,7 @@ class IndividualAnomalyInductive:
         self.mart = 0
         self.marts = [0, 0, 0]
 
-        self.df = pd.DataFrame(data=[], index=[])
+        self.history_data = []
 
     # ===========================================
     def fit(self, X):
@@ -92,7 +93,7 @@ class IndividualAnomalyInductive:
         '''
         
         self.T.append(dtime)
-        self.df = append_to_df(self.df, dtime, x)
+        self.history_data.append(x)
 
         strangeness, diff, representative = self.strg.predict(x)
         self.S.append(strangeness)
@@ -105,7 +106,7 @@ class IndividualAnomalyInductive:
         deviation = self._update_martingale(pval)
         self.M.append(deviation)
         
-        is_deviating = deviation > self.dev_threshold
+        is_deviating = deviation > self.dev_threshold # TODO: remove from deviation context in future
         return DeviationContext(strangeness, pval, deviation, is_deviating)
         
     # ===========================================
@@ -137,8 +138,8 @@ class IndividualAnomalyInductive:
         
     # ===========================================
     def get_stats(self):
-        stats = np.array([self.S, self.M, self.P]).T
-        return pd.DataFrame(index=self.T, data=stats, columns=["strangeness", "deviation", "pvalue"])
+        stats = np.array([self.S, self.P, self.M]).T
+        return pd.DataFrame(index=self.T, data=stats, columns=["strangeness", "pvalue", "deviation"])
 
     # ===========================================
     def get_all_deviations(self, min_len=5, dev_threshold=None):
@@ -174,61 +175,13 @@ class IndividualAnomalyInductive:
         return [deviations[id] for id in ids]
 
     # ===========================================
-    def plot_deviations(self, figsize=None, savefig=None, plots=["data", "strangeness", "pvalue", "deviation", "threshold"], debug=False):
-        '''Plots the anomaly score, deviation level and p-value, over time.'''
+    def plot_deviations(self, figsize=None, savefig=None, plots=None):
+        df_data = pd.DataFrame(index=self.T, data=self.history_data, columns=self.columns)
+        if self.columns is None: df_data = df_data.add_prefix('Feature ')
+        df_representatives = pd.DataFrame(index=self.T, data=self.representatives, columns=self.columns).add_prefix('Representatives ')
+        df_dev_contexts = self.get_stats()
 
-        register_matplotlib_converters()
-
-        plots, nb_axs, i = list(set(plots)), 0, 0
-        if "data" in plots:
-            nb_axs += 1
-        if "strangeness" in plots:
-            nb_axs += 1
-        if any(s in ["pvalue", "deviation", "threshold"] for s in plots):
-            nb_axs += 1
-
-        fig, axes = plt.subplots(nb_axs, sharex="row", figsize=figsize)
-        if not isinstance(axes, (np.ndarray) ):
-            axes = np.array([axes])
-
-        if "data" in plots:
-            axes[i].set_xlabel("Time")
-            axes[i].set_ylabel("Feature 0")
-            axes[i].plot(self.df.index, self.df.values[:, 0], label="Data")
-            if debug:
-                axes[i].plot(self.T, np.array(self.representatives)[:, 0], label="Reference")
-            axes[i].legend()
-            i += 1
-
-        if "strangeness" in plots:
-            axes[i].set_xlabel("Time")
-            axes[i].set_ylabel("Strangeness")
-            axes[i].plot(self.T, self.S, label="Strangeness")
-            if debug:
-                axes[i].plot(self.T, np.array(self.diffs)[:, 0], label="Difference")
-            axes[i].legend()
-            i += 1
-
-        if any(s in ["pvalue", "deviation", "threshold"] for s in plots):
-            axes[i].set_xlabel("Time")
-            axes[i].set_ylabel("Deviation")
-            axes[i].set_ylim(0, 1)
-            if "pvalue" in plots:
-                axes[i].scatter(self.T, self.P, alpha=0.25, marker=".", color="green", label="p-value")
-            if "deviation" in plots:
-                axes[i].plot(self.T, self.M, label="Deviation")
-            if "threshold" in plots:
-                axes[i].axhline(y=self.dev_threshold, color='r', linestyle='--', label="Threshold")
-            axes[i].legend()
-
-        fig.autofmt_xdate()
-
-        if savefig is None:
-            plt.draw()
-            plt.show()
-        else:
-            figpathname = utils.create_directory_from_path(savefig)
-            plt.savefig(figpathname)
+        plotting.plot_deviations(df_data, df_representatives, df_dev_contexts, self.dev_threshold, figsize, savefig, plots)
 
     # ===========================================
     def plot_explanations(self, from_time, to_time, figsize=None, savefig=None, k_features=4):
@@ -237,9 +190,10 @@ class IndividualAnomalyInductive:
         from_time_pad = from_time - (to_time - from_time)
         to_time_pad = to_time + (to_time - from_time)
 
-        sub_df = self.df[from_time: to_time]
-        sub_df_before = self.df[from_time_pad: from_time]
-        sub_df_after = self.df[to_time: to_time_pad]
+        df = pd.DataFrame(index=self.T, data=self.history_data)
+        sub_df = df[from_time: to_time]
+        sub_df_before = df[from_time_pad: from_time]
+        sub_df_after = df[to_time: to_time_pad]
 
         sub_representatives_df_pad = pd.DataFrame(index=self.T, data=self.representatives)[from_time_pad: to_time_pad]
         sub_diffs_df = pd.DataFrame(index=self.T, data=self.diffs)[from_time: to_time]
